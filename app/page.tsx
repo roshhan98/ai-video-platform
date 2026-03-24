@@ -1,8 +1,22 @@
-export default function Home() {
+import { auth } from "@clerk/nextjs/server";
+import { SignInButton, UserButton } from "@clerk/nextjs";
+
+export default async function Home() {
+  const { userId } = await auth();
+
   return (
     <div style={{ textAlign: "center", marginTop: "20%" }}>
-      <h1>🚀 My AI Video Platform is LIVE</h1>
-      <p>Built by Roshan Mishra</p>
+      {!userId ? (
+        <>
+          <h1>Welcome to AI Video Platform 🚀</h1>
+          <SignInButton />
+        </>
+      ) : (
+        <>
+          <h1>You are logged in 🎉</h1>
+          <UserButton />
+        </>
+      )}
     </div>
   );
 }
