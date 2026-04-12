@@ -1,18 +1,12 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
-import {
-  SignInButton,
-  SignOutButton,
-  UserButton,
-} from "@clerk/nextjs";
 import { db } from "../db";
 import { users } from "../db/schema";
-
-export const runtime = "nodejs";
+import { redirect } from "next/navigation";
+import LoginButton from "../components/LoginButton";
 
 export default async function Home() {
   const { userId } = await auth();
 
-  // Insert user if logged in
   if (userId) {
     const user = await currentUser();
 
@@ -23,42 +17,19 @@ export default async function Home() {
         email: user?.emailAddresses?.[0]?.emailAddress ?? null,
       })
       .onConflictDoNothing();
+
+    redirect("/dashboard");
   }
 
   return (
-    <div style={{ textAlign: "center", marginTop: "20%" }}>
-      
-      {/* 🔹 NOT LOGGED IN */}
-      {!userId ? (
-        <>
-          <h1>Please Login</h1>
+    <div className="h-screen bg-black flex items-center justify-center">
+      <div className="bg-black/70 p-8 rounded-xl w-[350px] text-center">
+        <h1 className="text-white text-3xl font-bold mb-6">
+          Sign In
+        </h1>
 
-          <SignInButton mode="modal" fallbackRedirectUrl="/">
-            
-          </SignInButton>
-        </>
-      ) : (
-        /* 🔹 LOGGED IN */
-        <>
-          <h1>Welcome 🎉</h1>
-
-          <UserButton />
-
-          <br /><br />
-
-          <a href="/dashboard">
-            <button style={{ padding: "10px 20px", cursor: "pointer" }}>
-              Go to Dashboard →
-            </button>
-          </a>
-
-          <br /><br />
-
-          <SignOutButton>
-            
-          </SignOutButton>
-        </>
-      )}
+        <LoginButton />
+      </div>
     </div>
   );
 }

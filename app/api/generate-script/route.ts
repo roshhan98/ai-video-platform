@@ -2,6 +2,9 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
+import fs from "fs";
+import path from "path";
+import { exec } from "child_process";
 
 export async function POST(req: Request) {
   console.log("DEBUG: My key is", process.env.GROK_API_KEY);
