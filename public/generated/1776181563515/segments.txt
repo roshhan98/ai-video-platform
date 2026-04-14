@@ -1,0 +1,4 @@
+file 'C:/Users/ADMIN/ai-video-platform/public/generated/1776181563515/segment-0.mp4'
+file 'C:/Users/ADMIN/ai-video-platform/public/generated/1776181563515/segment-1.mp4'
+file 'C:/Users/ADMIN/ai-video-platform/public/generated/1776181563515/segment-2.mp4'
+file 'C:/Users/ADMIN/ai-video-platform/public/generated/1776181563515/segment-3.mp4'

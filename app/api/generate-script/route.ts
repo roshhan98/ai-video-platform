@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { existsSync } from "fs";
 import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -11,6 +12,7 @@ import { generateText } from "ai";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const execFileAsync = promisify(execFile);
 const TARGET_DURATION_SECONDS = 24;
@@ -18,6 +20,8 @@ const SEGMENT_COUNT = 4;
 const SEGMENT_DURATION_SECONDS = TARGET_DURATION_SECONDS / SEGMENT_COUNT;
 const OUTPUT_WIDTH = 1280;
 const OUTPUT_HEIGHT = 720;
+const VIDEO_PRESET = "veryfast";
+const VIDEO_CRF = "30";
 const FFMPEG_BINARY = resolveFfmpegPath();
 
 type PexelsVideoFile = {
@@ -72,29 +76,37 @@ async function POST(req: Request) {
       );
     }
 
-    const timestamp = Date.now();
-    const publicDir = path.join(process.cwd(), "public");
-    const workDir = path.join(publicDir, "generated", String(timestamp));
+    const workDir = path.join(os.tmpdir(), `ai-video-${Date.now()}`);
     await fs.mkdir(workDir, { recursive: true });
 
-    const script = await createNarration(prompt);
-    const audioPath = path.join(workDir, "voice.mp3");
-    await saveVoiceover(script, audioPath);
+    try {
+      const script = await createNarration(prompt);
+      const audioPath = path.join(workDir, "voice.mp3");
+      await saveVoiceover(script, audioPath);
 
-    const clips = await downloadPexelsVideos(prompt, workDir);
-    const segments =
-      clips.length > 0
-        ? await createVideoSegments(clips, workDir)
-        : await createImageSegments(prompt, workDir);
+      const clips = await downloadPexelsVideos(prompt, workDir);
+      const segments =
+        clips.length > 0
+          ? await createVideoSegments(clips, workDir)
+          : await createImageSegments(prompt, workDir);
 
-    const videoPath = path.join(workDir, "video.mp4");
-    await muxFinalVideo(segments, audioPath, videoPath, workDir);
+      const videoPath = path.join(workDir, "video.mp4");
+      await muxFinalVideo(segments, audioPath, videoPath, workDir);
 
-    return NextResponse.json({
-      videoUrl: `/generated/${timestamp}/video.mp4`,
-      duration: `${TARGET_DURATION_SECONDS} seconds`,
-      script,
-    });
+      const video = await fs.readFile(videoPath);
+
+      return new Response(video, {
+        headers: {
+          "Content-Type": "video/mp4",
+          "Content-Disposition": 'attachment; filename="ai-video.mp4"',
+          "Cache-Control": "no-store",
+          "X-Video-Duration": `${TARGET_DURATION_SECONDS}`,
+          "X-Video-Script": encodeURIComponent(script),
+        },
+      });
+    } finally {
+      await fs.rm(workDir, { recursive: true, force: true });
+    }
   } catch (err) {
     console.error("Video generation failed:", err);
     return NextResponse.json(
@@ -239,9 +251,12 @@ function pickBestVideoFile(files: PexelsVideoFile[]) {
 function scoreVideoFile(file: PexelsVideoFile) {
   const width = file.width ?? 0;
   const height = file.height ?? 0;
-  const resolutionScore = Math.min(width * height, OUTPUT_WIDTH * OUTPUT_HEIGHT);
-  const qualityScore = file.quality === "hd" ? 1_000_000 : 0;
-  return resolutionScore + qualityScore;
+  const pixels = width * height;
+  const targetPixels = OUTPUT_WIDTH * OUTPUT_HEIGHT;
+  const resolutionDistance = Math.abs(targetPixels - pixels);
+  const hdScore = file.quality === "hd" ? 1_000_000 : 0;
+  const landscapeScore = width >= height ? 500_000 : 0;
+  return hdScore + landscapeScore - resolutionDistance;
 }
 
 async function downloadFile(url: string, destination: string) {
@@ -256,34 +271,34 @@ async function downloadFile(url: string, destination: string) {
 }
 
 async function createVideoSegments(clips: string[], workDir: string) {
-  const segments = await Promise.all(
-    Array.from({ length: SEGMENT_COUNT }, async (_, index) => {
-      const clip = clips[index % clips.length];
-      const output = path.join(workDir, `segment-${index}.mp4`);
+  const segments: string[] = [];
 
-      await execFileAsync(FFMPEG_BINARY, [
-        "-y",
-        "-stream_loop",
-        "-1",
-        "-i",
-        clip,
-        "-t",
-        String(SEGMENT_DURATION_SECONDS),
-        "-vf",
-        `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},fps=30,setsar=1,format=yuv420p`,
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "21",
-        output,
-      ]);
+  for (let index = 0; index < SEGMENT_COUNT; index += 1) {
+    const clip = clips[index % clips.length];
+    const output = path.join(workDir, `segment-${index}.mp4`);
 
-      return output;
-    })
-  );
+    await execFileAsync(FFMPEG_BINARY, [
+      "-y",
+      "-stream_loop",
+      "-1",
+      "-i",
+      clip,
+      "-t",
+      String(SEGMENT_DURATION_SECONDS),
+      "-vf",
+      `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},fps=30,setsar=1,format=yuv420p`,
+      "-an",
+      "-c:v",
+      "libx264",
+      "-preset",
+      VIDEO_PRESET,
+      "-crf",
+      VIDEO_CRF,
+      output,
+    ]);
+
+    segments.push(output);
+  }
 
   return segments;
 }
@@ -292,35 +307,35 @@ async function createImageSegments(prompt: string, workDir: string) {
   const imagePath = path.join(workDir, "fallback.jpg");
   await downloadPexelsImage(prompt, imagePath);
 
-  const segments = await Promise.all(
-    Array.from({ length: SEGMENT_COUNT }, async (_, index) => {
-      const output = path.join(workDir, `segment-${index}.mp4`);
-      const zoomDirection =
-        index % 2 === 0 ? "zoom+0.0018" : "max(zoom-0.0012,1.0)";
+  const segments: string[] = [];
 
-      await execFileAsync(FFMPEG_BINARY, [
-        "-y",
-        "-loop",
-        "1",
-        "-i",
-        imagePath,
-        "-t",
-        String(SEGMENT_DURATION_SECONDS),
-        "-vf",
-        `scale=${OUTPUT_WIDTH * 2}:${OUTPUT_HEIGHT * 2}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH * 2}:${OUTPUT_HEIGHT * 2},zoompan=z='if(eq(on,0),1.08,${zoomDirection})':d=180:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:fps=30,setsar=1,format=yuv420p`,
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "21",
-        output,
-      ]);
+  for (let index = 0; index < SEGMENT_COUNT; index += 1) {
+    const output = path.join(workDir, `segment-${index}.mp4`);
+    const zoomDirection =
+      index % 2 === 0 ? "zoom+0.0018" : "max(zoom-0.0012,1.0)";
 
-      return output;
-    })
-  );
+    await execFileAsync(FFMPEG_BINARY, [
+      "-y",
+      "-loop",
+      "1",
+      "-i",
+      imagePath,
+      "-t",
+      String(SEGMENT_DURATION_SECONDS),
+      "-vf",
+      `scale=${OUTPUT_WIDTH * 2}:${OUTPUT_HEIGHT * 2}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH * 2}:${OUTPUT_HEIGHT * 2},zoompan=z='if(eq(on,0),1.08,${zoomDirection})':d=180:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:fps=30,setsar=1,format=yuv420p`,
+      "-an",
+      "-c:v",
+      "libx264",
+      "-preset",
+      VIDEO_PRESET,
+      "-crf",
+      VIDEO_CRF,
+      output,
+    ]);
+
+    segments.push(output);
+  }
 
   return segments;
 }
@@ -383,16 +398,17 @@ async function muxFinalVideo(
     "0:v:0",
     "-map",
     "1:a:0",
+    "-dn",
     "-c:v",
     "libx264",
     "-preset",
-    "veryfast",
+    VIDEO_PRESET,
     "-crf",
-    "20",
+    VIDEO_CRF,
     "-c:a",
     "aac",
     "-b:a",
-    "192k",
+    "128k",
     "-af",
     "loudnorm=I=-16:TP=-1.5:LRA=11,apad",
     "-shortest",

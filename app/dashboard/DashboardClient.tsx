@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import LogoutButton from "../../components/LogoutButton";
 
 export default function DashboardClient() {
@@ -9,6 +9,14 @@ export default function DashboardClient() {
   const [videoUrl, setVideoUrl] = useState("");
   const [script, setScript] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    return () => {
+      if (videoUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(videoUrl);
+      }
+    };
+  }, [videoUrl]);
 
   const generateVideo = async () => {
     const trimmedPrompt = prompt.trim();
@@ -20,7 +28,13 @@ export default function DashboardClient() {
 
     setLoading(true);
     setError("");
-    setVideoUrl("");
+    setVideoUrl((currentVideoUrl) => {
+      if (currentVideoUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(currentVideoUrl);
+      }
+
+      return "";
+    });
     setScript("");
 
     try {
@@ -32,14 +46,17 @@ export default function DashboardClient() {
         body: JSON.stringify({ prompt: trimmedPrompt }),
       });
 
-      const data = await res.json();
-
       if (!res.ok) {
+        const data = await res.json();
         throw new Error(data.error || "Video generation failed.");
       }
 
-      setVideoUrl(data.videoUrl);
-      setScript(data.script || "");
+      const videoBlob = await res.blob();
+      const objectUrl = URL.createObjectURL(videoBlob);
+      const encodedScript = res.headers.get("X-Video-Script");
+
+      setVideoUrl(objectUrl);
+      setScript(encodedScript ? decodeURIComponent(encodedScript) : "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Video generation failed.");
     } finally {
@@ -101,7 +118,7 @@ export default function DashboardClient() {
               </p>
             )}
 
-            <a href={videoUrl} download>
+            <a href={videoUrl} download="ai-video.mp4">
               <button className="mt-4 bg-green-600 px-4 py-2 rounded">
                 Download Video
               </button>
